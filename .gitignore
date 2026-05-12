@@ -18,7 +18,7 @@
 /public/storage
 /storage/*.key
 /storage/pail
-/vendor
+# /vendor - Include vendor folder for DreamHost Shared Hosting (no composer CLI available)
 Homestead.json
 Homestead.yaml
 Thumbs.db
