@@ -102,35 +102,9 @@ if ($return_code !== 0) {
 
 write_log("✓ Git pull successful");
 
-// Optional: Run Laravel post-deployment commands
-write_log("Executing Laravel post-deploy commands...");
-
-// Composer install (if needed)
-if (file_exists($repo_dir . '/composer.json')) {
-    write_log("Executing: composer install --no-dev");
-    exec('cd ' . escapeshellarg($repo_dir) . ' && composer install --no-dev 2>&1', $composer_output, $composer_code);
-    foreach ($composer_output as $line) {
-        write_log("COMPOSER: $line");
-    }
-}
-
-// Database migrations (if needed)
-if (file_exists($repo_dir . '/artisan')) {
-    write_log("Executing: php artisan migrate --force");
-    exec('cd ' . escapeshellarg($repo_dir) . ' && php artisan migrate --force 2>&1', $migrate_output, $migrate_code);
-    foreach ($migrate_output as $line) {
-        write_log("MIGRATE: $line");
-    }
-}
-
-// Clear cache
-if (file_exists($repo_dir . '/artisan')) {
-    write_log("Executing: php artisan cache:clear");
-    exec('cd ' . escapeshellarg($repo_dir) . ' && php artisan cache:clear 2>&1', $cache_output, $cache_code);
-    foreach ($cache_output as $line) {
-        write_log("CACHE: $line");
-    }
-}
+// Note: Post-deployment commands (composer, artisan) are not available on DreamHost Shared
+// The code files are already updated via git pull - that's what matters!
+write_log("Note: Skipping post-deploy commands (not available on Shared Hosting)");
 
 write_log("✓ Deployment complete!");
 write_log("=== End ===\n");
