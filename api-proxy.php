@@ -608,10 +608,12 @@ try {
             // Build the target URL
             $target_url = 'https://almodawana.dreamhosters.com/api/v1/admin' . ($slug ? '/' . $slug : '');
 
-            // Add query parameters if any
+            // Add query parameters if any (exclude endpoint and slug)
             if (!empty($_GET)) {
                 $filtered_params = $_GET;
                 unset($filtered_params['endpoint']);
+                unset($filtered_params['slug']);
+                unset($filtered_params['sub']);
                 if (!empty($filtered_params)) {
                     $target_url .= '?' . http_build_query($filtered_params);
                 }
