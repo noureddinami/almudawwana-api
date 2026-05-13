@@ -639,29 +639,41 @@ try {
                 $request_headers[] = "Authorization: Bearer {$token}";
             }
 
+            // Check if curl is available
+            if (!function_exists('curl_init')) {
+                http_response_code(502);
+                echo json_encode(['error' => 'curl extension not available on this server']);
+                exit;
+            }
+
             // Forward the request to Laravel API
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_URL, $target_url);
             curl_setopt($ch, CURLOPT_HTTPHEADER, $request_headers);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true); // Follow redirects
             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // For testing only
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
             curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
             // Set request method and body
+            $body = file_get_contents('php://input');
+
             if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 curl_setopt($ch, CURLOPT_POST, true);
-                $body = file_get_contents('php://input');
                 if ($body) {
                     curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
                 }
             } elseif ($_SERVER['REQUEST_METHOD'] === 'PUT') {
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-                $body = file_get_contents('php://input');
                 if ($body) {
                     curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
                 }
             } elseif ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
                 curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+            } else {
+                // GET or other methods
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $_SERVER['REQUEST_METHOD']);
             }
 
             // Execute request
@@ -672,8 +684,33 @@ try {
 
             if ($curl_error) {
                 http_response_code(502);
-                echo json_encode(['error' => 'Gateway error: ' . $curl_error]);
+                echo json_encode([
+                    'error' => 'Gateway error: ' . $curl_error,
+                    'debug' => [
+                        'target_url' => $target_url,
+                        'method' => $_SERVER['REQUEST_METHOD']
+                    ]
+                ]);
                 exit;
+            }
+
+            // Debug: Check if response is valid JSON
+            if (!empty($response)) {
+                $decoded = json_decode($response, true);
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    // Response is not JSON - might be HTML error from Laravel
+                    http_response_code(502);
+                    echo json_encode([
+                        'error' => 'Invalid response from Laravel API',
+                        'http_code' => $http_code,
+                        'response_preview' => substr($response, 0, 200),
+                        'debug' => [
+                            'target_url' => $target_url,
+                            'method' => $_SERVER['REQUEST_METHOD']
+                        ]
+                    ]);
+                    exit;
+                }
             }
 
             // Return the response
