@@ -447,10 +447,17 @@ try {
                         exit;
                     }
 
-                    // Generate simple token
-                    $token = bin2hex(random_bytes(32));
+                    // Generate token with user info embedded (base64 encoded)
+                    $token_data = [
+                        'user_id' => $user['id'],
+                        'email' => $user['email'],
+                        'role' => $user['role'],
+                        'created_at' => time(),
+                        'nonce' => bin2hex(random_bytes(16))
+                    ];
+                    $token = base64_encode(json_encode($token_data));
 
-                    // Store in session
+                    // Also store in session for backward compatibility
                     $_SESSION['token'] = $token;
                     $_SESSION['user_id'] = $user['id'];
                     $_SESSION['user_email'] = $user['email'];
@@ -480,8 +487,9 @@ try {
         // ────────────────────────────────────────────────────────────────
         case 'me':
             if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-                // Check if user is logged in (via token or session)
+                // Check if user is logged in (via token)
                 $token = null;
+                $token_data = null;
 
                 // Try to get token from Authorization header
                 $headers = getallheaders();
@@ -492,31 +500,52 @@ try {
                     }
                 }
 
-                // Fall back to session token
-                if (!$token && isset($_SESSION['token'])) {
-                    $token = $_SESSION['token'];
-                }
-
                 // Fall back to query parameter
                 if (!$token && isset($_GET['token'])) {
                     $token = $_GET['token'];
                 }
 
-                if (!$token || !isset($_SESSION['user_id'])) {
+                // Fall back to session token
+                if (!$token && isset($_SESSION['token'])) {
+                    $token = $_SESSION['token'];
+                }
+
+                if (!$token) {
                     http_response_code(401);
-                    echo json_encode(['error' => 'Unauthorized']);
+                    echo json_encode(['error' => 'Unauthorized - no token provided']);
                     exit;
                 }
 
-                // Get user from session
-                $user_id = $_SESSION['user_id'];
+                // Decode token to get user_id
+                try {
+                    $decoded = json_decode(base64_decode($token), true);
+                    if (!$decoded || !isset($decoded['user_id'])) {
+                        http_response_code(401);
+                        echo json_encode(['error' => 'Invalid token format']);
+                        exit;
+                    }
+                    $token_data = $decoded;
+                    $user_id = $token_data['user_id'];
+                } catch (Exception $e) {
+                    http_response_code(401);
+                    echo json_encode(['error' => 'Invalid token']);
+                    exit;
+                }
+
+                // Get user from database
                 $stmt = $pdo->prepare('SELECT id, full_name, email, role, status FROM users WHERE id = ? LIMIT 1');
                 $stmt->execute([$user_id]);
                 $user = $stmt->fetch();
 
-                if (!$user || $user['status'] !== 'active') {
+                if (!$user) {
                     http_response_code(401);
-                    echo json_encode(['error' => 'User not found or inactive']);
+                    echo json_encode(['error' => 'User not found']);
+                    exit;
+                }
+
+                if ($user['status'] !== 'active') {
+                    http_response_code(403);
+                    echo json_encode(['error' => 'User account is not active']);
                     exit;
                 }
 
