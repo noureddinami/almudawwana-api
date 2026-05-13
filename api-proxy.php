@@ -490,14 +490,18 @@ try {
                 // Check if user is logged in (via token)
                 $token = null;
                 $token_data = null;
+                $debug_info = [];
 
                 // Try to get token from Authorization header (case-insensitive)
                 $headers = getallheaders();
+                $debug_info['all_headers'] = array_keys($headers);
+
                 foreach ($headers as $name => $value) {
                     if (strtolower($name) === 'authorization') {
                         $matches = [];
                         if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
                             $token = $matches[1];
+                            $debug_info['token_source'] = 'authorization_header';
                             break;
                         }
                     }
@@ -506,25 +510,28 @@ try {
                 // Fall back to query parameter
                 if (!$token && isset($_GET['token'])) {
                     $token = $_GET['token'];
+                    $debug_info['token_source'] = 'query_param';
                 }
 
                 // Fall back to session token
                 if (!$token && isset($_SESSION['token'])) {
                     $token = $_SESSION['token'];
+                    $debug_info['token_source'] = 'session';
                 }
 
                 if (!$token) {
                     http_response_code(401);
                     echo json_encode([
                         'error' => 'Unauthorized - no token provided',
-                        'debug' => [
-                            'auth_header' => isset($headers['Authorization']) ? 'present' : 'missing',
-                            'session_token' => isset($_SESSION['token']) ? 'present' : 'missing',
-                            'query_token' => isset($_GET['token']) ? 'present' : 'missing'
-                        ]
+                        'request_method' => $_SERVER['REQUEST_METHOD'],
+                        'request_uri' => $_SERVER['REQUEST_URI'],
+                        'debug' => $debug_info
                     ]);
                     exit;
                 }
+
+                $debug_info['token_received'] = true;
+                $debug_info['token_length'] = strlen($token);
 
                 // Decode token to get user_id
                 // Support both new format (base64 JSON) and old format (plain hex)
