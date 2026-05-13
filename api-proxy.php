@@ -662,6 +662,16 @@ try {
                 }
             }
 
+            // Method 4: Fall back to query parameter (DreamHost strips Authorization header)
+            if (!$token && isset($_GET['token'])) {
+                $token = $_GET['token'];
+            }
+
+            // Method 5: Fall back to session token
+            if (!$token && isset($_SESSION['token'])) {
+                $token = $_SESSION['token'];
+            }
+
             // Verify token and get user
             if (!$token) {
                 // Debug: Log what headers we received
