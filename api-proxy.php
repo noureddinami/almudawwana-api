@@ -97,24 +97,51 @@ try {
 $path = $_SERVER['REQUEST_URI'];
 $path = parse_url($path, PHP_URL_PATH);
 
-// Extract endpoint and slug from path
-// Support both: ?endpoint=codes&slug=... and path-based routing
+// Extract endpoint and slug from query parameters first
 $endpoint = $_GET['endpoint'] ?? null;
 $slug = $_GET['slug'] ?? null;
+$sub_resource = $_GET['sub'] ?? null;  // For ?sub=articles
 
 // Parse path-based URLs: /codes, /codes/{slug}, /codes/{slug}/articles, etc.
 if (!$endpoint) {
     $parts = array_filter(explode('/', trim($path, '/')));
 
-    if (count($parts) >= 2 && $parts[count($parts)-1] === 'api-proxy.php') {
+    // Remove 'api-proxy.php' from parts if present
+    if (count($parts) > 0 && $parts[count($parts)-1] === 'api-proxy.php') {
         array_pop($parts);
     }
 
-    // Handle /api/v1/codes, /codes, etc.
-    $first = end($parts);
+    // Also skip /api/v1/ prefix if present
+    if (count($parts) > 0 && $parts[0] === 'api') {
+        array_shift($parts);
+    }
+    if (count($parts) > 0 && $parts[0] === 'v1') {
+        array_shift($parts);
+    }
 
-    if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search') {
-        $endpoint = $first;
+    // Now parse the remaining path
+    // /codes -> endpoint=codes
+    // /codes/code-de-famille -> endpoint=codes, slug=code-de-famille
+    // /codes/code-de-famille/articles -> endpoint=codes, slug=code-de-famille, sub_resource=articles
+    // /articles/article-1 -> endpoint=articles, slug=article-1
+    // /search -> endpoint=search
+
+    if (count($parts) > 0) {
+        $first = $parts[0];
+
+        if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search') {
+            $endpoint = $first;
+
+            // Extract slug if present
+            if (count($parts) > 1) {
+                $slug = $parts[1];
+
+                // Extract sub-resource if present (e.g., 'articles', 'pdfs')
+                if (count($parts) > 2) {
+                    $sub_resource = $parts[2];
+                }
+            }
+        }
     }
 }
 
@@ -133,26 +160,10 @@ try {
         // CODES ENDPOINT
         // ────────────────────────────────────────────────────────────────
         case 'codes':
-            if ($slug) {
-                // GET /codes/{slug}
-                $stmt = $pdo->prepare('SELECT * FROM codes WHERE slug = ? LIMIT 1');
-                $stmt->execute([$slug]);
-                $code = $stmt->fetch();
-
-                if (!$code) {
-                    http_response_code(404);
-                    echo json_encode(['error' => 'Code not found']);
-                    exit;
-                }
-
-                echo json_encode($code);
-            } elseif (isset($_GET['slug'])) {
-                // GET /codes/{slug}/articles
-                $code_slug = $_GET['slug'];
-
-                // Get code
+            if ($slug && $sub_resource === 'articles') {
+                // GET /codes/{slug}/articles - Return articles for a specific code
                 $stmt = $pdo->prepare('SELECT id, slug, title_ar, title_fr FROM codes WHERE slug = ? LIMIT 1');
-                $stmt->execute([$code_slug]);
+                $stmt->execute([$slug]);
                 $code = $stmt->fetch();
 
                 if (!$code) {
@@ -185,8 +196,21 @@ try {
                     'from' => $total > 0 ? $offset + 1 : 0,
                     'to' => min($offset + $per_page, $total),
                 ]);
+            } elseif ($slug && !$sub_resource) {
+                // GET /codes/{slug} - Return single code details
+                $stmt = $pdo->prepare('SELECT * FROM codes WHERE slug = ? LIMIT 1');
+                $stmt->execute([$slug]);
+                $code = $stmt->fetch();
+
+                if (!$code) {
+                    http_response_code(404);
+                    echo json_encode(['error' => 'Code not found']);
+                    exit;
+                }
+
+                echo json_encode($code);
             } else {
-                // GET /codes (list)
+                // GET /codes - Return list of all codes
                 $sql = sprintf(
                     'SELECT * FROM codes ORDER BY created_at DESC LIMIT %d OFFSET %d',
                     $per_page, $offset
