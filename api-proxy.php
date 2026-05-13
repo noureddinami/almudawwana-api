@@ -501,18 +501,37 @@ try {
                 $token_data = null;
                 $debug_info = [];
 
-                // Try to get token from Authorization header (case-insensitive)
-                $headers = getallheaders();
-                $debug_info['all_headers'] = array_keys($headers);
+                // Try multiple methods to get the Authorization header
+                // Method 1: getallheaders()
+                if (function_exists('getallheaders')) {
+                    $headers = getallheaders();
+                    $debug_info['all_headers'] = array_keys($headers);
 
-                foreach ($headers as $name => $value) {
-                    if (strtolower($name) === 'authorization') {
-                        $matches = [];
-                        if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
-                            $token = $matches[1];
-                            $debug_info['token_source'] = 'authorization_header';
-                            break;
+                    foreach ($headers as $name => $value) {
+                        if (strtolower($name) === 'authorization') {
+                            $matches = [];
+                            if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
+                                $token = $matches[1];
+                                $debug_info['token_source'] = 'authorization_header';
+                                break;
+                            }
                         }
+                    }
+                }
+
+                // Method 2: $_SERVER['HTTP_AUTHORIZATION'] (for shared hosting)
+                if (!$token && isset($_SERVER['HTTP_AUTHORIZATION'])) {
+                    if (preg_match('/Bearer\s+(\S+)/i', $_SERVER['HTTP_AUTHORIZATION'], $matches)) {
+                        $token = $matches[1];
+                        $debug_info['token_source'] = 'http_authorization';
+                    }
+                }
+
+                // Method 3: Check for Authorization in $_SERVER (some configs)
+                if (!$token && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+                    if (preg_match('/Bearer\s+(\S+)/i', $_SERVER['REDIRECT_HTTP_AUTHORIZATION'], $matches)) {
+                        $token = $matches[1];
+                        $debug_info['token_source'] = 'redirect_http_authorization';
                     }
                 }
 
@@ -614,14 +633,32 @@ try {
             // All admin endpoints require authentication
             $token = null;
             $user_id = null;
-            $headers = getallheaders();
 
-            foreach ($headers as $name => $value) {
-                if (strtolower($name) === 'authorization') {
-                    if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
-                        $token = $matches[1];
-                        break;
+            // Try multiple methods to get the Authorization header
+            // Method 1: getallheaders()
+            if (function_exists('getallheaders')) {
+                $headers = getallheaders();
+                foreach ($headers as $name => $value) {
+                    if (strtolower($name) === 'authorization') {
+                        if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
+                            $token = $matches[1];
+                            break;
+                        }
                     }
+                }
+            }
+
+            // Method 2: $_SERVER['HTTP_AUTHORIZATION'] (for shared hosting)
+            if (!$token && isset($_SERVER['HTTP_AUTHORIZATION'])) {
+                if (preg_match('/Bearer\s+(\S+)/i', $_SERVER['HTTP_AUTHORIZATION'], $matches)) {
+                    $token = $matches[1];
+                }
+            }
+
+            // Method 3: Check for Authorization in $_SERVER (some configs)
+            if (!$token && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+                if (preg_match('/Bearer\s+(\S+)/i', $_SERVER['REDIRECT_HTTP_AUTHORIZATION'], $matches)) {
+                    $token = $matches[1];
                 }
             }
 
