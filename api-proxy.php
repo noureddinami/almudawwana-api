@@ -132,7 +132,7 @@ if (!$endpoint) {
     if (count($parts) > 0) {
         $first = $parts[0];
 
-        if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search' || $first === 'auth' || $first === 'me') {
+        if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search' || $first === 'auth' || $first === 'me' || $first === 'admin') {
             $endpoint = $first;
 
             // Extract slug if present
@@ -599,6 +599,89 @@ try {
             break;
 
         // ────────────────────────────────────────────────────────────────
+        // ADMIN ENDPOINTS (Proxy to Laravel API)
+        // ────────────────────────────────────────────────────────────────
+        case 'admin':
+            // Proxy admin requests to the Laravel API
+            // We'll handle this by forwarding to the Laravel backend
+
+            // Build the target URL
+            $target_url = 'https://almodawana.dreamhosters.com/api/v1/admin' . ($slug ? '/' . $slug : '');
+
+            // Add query parameters if any
+            if (!empty($_GET)) {
+                $filtered_params = $_GET;
+                unset($filtered_params['endpoint']);
+                if (!empty($filtered_params)) {
+                    $target_url .= '?' . http_build_query($filtered_params);
+                }
+            }
+
+            // Get the token from Authorization header (case-insensitive)
+            $token = null;
+            $headers = getallheaders();
+            foreach ($headers as $name => $value) {
+                if (strtolower($name) === 'authorization') {
+                    $matches = [];
+                    if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
+                        $token = $matches[1];
+                        break;
+                    }
+                }
+            }
+
+            // Prepare headers for the request
+            $request_headers = [
+                'Content-Type: application/json',
+                'Accept: application/json',
+            ];
+            if ($token) {
+                $request_headers[] = "Authorization: Bearer {$token}";
+            }
+
+            // Forward the request to Laravel API
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $target_url);
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $request_headers);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // For testing only
+            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+
+            // Set request method and body
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                curl_setopt($ch, CURLOPT_POST, true);
+                $body = file_get_contents('php://input');
+                if ($body) {
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                }
+            } elseif ($_SERVER['REQUEST_METHOD'] === 'PUT') {
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
+                $body = file_get_contents('php://input');
+                if ($body) {
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
+                }
+            } elseif ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+            }
+
+            // Execute request
+            $response = curl_exec($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curl_error = curl_error($ch);
+            curl_close($ch);
+
+            if ($curl_error) {
+                http_response_code(502);
+                echo json_encode(['error' => 'Gateway error: ' . $curl_error]);
+                exit;
+            }
+
+            // Return the response
+            http_response_code($http_code);
+            echo $response;
+            break;
+
+        // ────────────────────────────────────────────────────────────────
         // DEFAULT / NOT FOUND
         // ────────────────────────────────────────────────────────────────
         default:
@@ -606,7 +689,7 @@ try {
             echo json_encode([
                 'error' => 'Unknown endpoint',
                 'endpoint' => $endpoint,
-                'available' => ['codes', 'articles', 'books', 'search', 'auth']
+                'available' => ['codes', 'articles', 'books', 'search', 'auth', 'me', 'admin']
             ]);
     }
 
