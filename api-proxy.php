@@ -19,11 +19,14 @@ header('Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 header('Access-Control-Max-Age: 3600');
 
-// Handle OPTIONS
+// Handle OPTIONS (preflight requests)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
+
+// Session management for authentication
+session_start();
 
 // ============================================================================
 // CONFIGURATION
@@ -129,7 +132,7 @@ if (!$endpoint) {
     if (count($parts) > 0) {
         $first = $parts[0];
 
-        if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search') {
+        if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search' || $first === 'auth') {
             $endpoint = $first;
 
             // Extract slug if present
@@ -392,6 +395,87 @@ try {
             break;
 
         // ────────────────────────────────────────────────────────────────
+        // AUTHENTICATION ENDPOINT
+        // ────────────────────────────────────────────────────────────────
+        case 'auth':
+            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                $action = $_GET['action'] ?? 'login';
+
+                if ($action === 'login') {
+                    // Get email and password from POST
+                    $input = file_get_contents('php://input');
+                    $data = json_decode($input, true);
+
+                    $email = trim($data['email'] ?? '');
+                    $password = trim($data['password'] ?? '');
+
+                    if (empty($email) || empty($password)) {
+                        http_response_code(400);
+                        echo json_encode(['error' => 'Email and password are required']);
+                        exit;
+                    }
+
+                    // Find user by email
+                    $stmt = $pdo->prepare('SELECT id, full_name, email, password, role, status FROM users WHERE email = ? LIMIT 1');
+                    $stmt->execute([$email]);
+                    $user = $stmt->fetch();
+
+                    if (!$user) {
+                        http_response_code(401);
+                        echo json_encode(['error' => 'Invalid email or password']);
+                        exit;
+                    }
+
+                    // Verify password
+                    if (!password_verify($password, $user['password'])) {
+                        http_response_code(401);
+                        echo json_encode(['error' => 'Invalid email or password']);
+                        exit;
+                    }
+
+                    // Check if user is active
+                    if ($user['status'] !== 'active') {
+                        http_response_code(403);
+                        echo json_encode(['error' => 'User account is not active']);
+                        exit;
+                    }
+
+                    // Check if user is admin
+                    if ($user['role'] !== 'admin') {
+                        http_response_code(403);
+                        echo json_encode(['error' => 'Only admins can login']);
+                        exit;
+                    }
+
+                    // Generate simple token
+                    $token = bin2hex(random_bytes(32));
+
+                    // Store in session
+                    $_SESSION['token'] = $token;
+                    $_SESSION['user_id'] = $user['id'];
+                    $_SESSION['user_email'] = $user['email'];
+
+                    // Return response
+                    echo json_encode([
+                        'token' => $token,
+                        'user' => [
+                            'id' => $user['id'],
+                            'full_name' => $user['full_name'],
+                            'email' => $user['email'],
+                            'role' => $user['role']
+                        ]
+                    ]);
+                } else {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'Unknown auth action']);
+                }
+            } else {
+                http_response_code(405);
+                echo json_encode(['error' => 'Method not allowed']);
+            }
+            break;
+
+        // ────────────────────────────────────────────────────────────────
         // DEFAULT / NOT FOUND
         // ────────────────────────────────────────────────────────────────
         default:
@@ -399,7 +483,7 @@ try {
             echo json_encode([
                 'error' => 'Unknown endpoint',
                 'endpoint' => $endpoint,
-                'available' => ['codes', 'articles', 'books', 'search']
+                'available' => ['codes', 'articles', 'books', 'search', 'auth']
             ]);
     }
 
