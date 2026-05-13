@@ -129,16 +129,16 @@ try {
 
                 // Get total count
                 $stmt = $pdo->query('SELECT COUNT(*) as count FROM codes');
-                $total = $stmt->fetch()['count'];
-                $last_page = ceil($total / $per_page);
+                $total = (int)$stmt->fetch()['count'];
+                $last_page = (int)ceil($total / $per_page);
 
-                // Get paginated data
-                $stmt = $pdo->prepare('
-                    SELECT * FROM codes
-                    ORDER BY created_at DESC
-                    LIMIT ? OFFSET ?
-                ');
-                $stmt->execute([$per_page, $offset]);
+                // Get paginated data - use sprintf to avoid PDO binding issues with LIMIT
+                $sql = sprintf(
+                    'SELECT * FROM codes ORDER BY created_at DESC LIMIT %d OFFSET %d',
+                    (int)$per_page,
+                    (int)$offset
+                );
+                $stmt = $pdo->query($sql);
                 $codes = $stmt->fetchAll();
 
                 echo json_encode([
@@ -181,16 +181,16 @@ try {
 
                 // Get total count
                 $stmt = $pdo->query('SELECT COUNT(*) as count FROM articles');
-                $total = $stmt->fetch()['count'];
-                $last_page = ceil($total / $per_page);
+                $total = (int)$stmt->fetch()['count'];
+                $last_page = (int)ceil($total / $per_page);
 
-                // Get paginated data
-                $stmt = $pdo->prepare('
-                    SELECT * FROM articles
-                    ORDER BY created_at DESC
-                    LIMIT ? OFFSET ?
-                ');
-                $stmt->execute([$per_page, $offset]);
+                // Get paginated data - use sprintf to avoid PDO binding issues with LIMIT
+                $sql = sprintf(
+                    'SELECT * FROM articles ORDER BY created_at DESC LIMIT %d OFFSET %d',
+                    (int)$per_page,
+                    (int)$offset
+                );
+                $stmt = $pdo->query($sql);
                 $articles = $stmt->fetchAll();
 
                 // Load related codes for each article
@@ -220,16 +220,16 @@ try {
 
             // Get total count
             $stmt = $pdo->query('SELECT COUNT(*) as count FROM books');
-            $total = $stmt->fetch()['count'];
-            $last_page = ceil($total / $per_page);
+            $total = (int)$stmt->fetch()['count'];
+            $last_page = (int)ceil($total / $per_page);
 
-            // Get paginated data
-            $stmt = $pdo->prepare('
-                SELECT * FROM books
-                ORDER BY created_at DESC
-                LIMIT ? OFFSET ?
-            ');
-            $stmt->execute([$per_page, $offset]);
+            // Get paginated data - use sprintf to avoid PDO binding issues with LIMIT
+            $sql = sprintf(
+                'SELECT * FROM books ORDER BY created_at DESC LIMIT %d OFFSET %d',
+                (int)$per_page,
+                (int)$offset
+            );
+            $stmt = $pdo->query($sql);
             $books = $stmt->fetchAll();
 
             echo json_encode([
