@@ -491,12 +491,15 @@ try {
                 $token = null;
                 $token_data = null;
 
-                // Try to get token from Authorization header
+                // Try to get token from Authorization header (case-insensitive)
                 $headers = getallheaders();
-                if (isset($headers['Authorization'])) {
-                    $matches = [];
-                    if (preg_match('/Bearer\s+(\S+)/', $headers['Authorization'], $matches)) {
-                        $token = $matches[1];
+                foreach ($headers as $name => $value) {
+                    if (strtolower($name) === 'authorization') {
+                        $matches = [];
+                        if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
+                            $token = $matches[1];
+                            break;
+                        }
                     }
                 }
 
@@ -512,23 +515,47 @@ try {
 
                 if (!$token) {
                     http_response_code(401);
-                    echo json_encode(['error' => 'Unauthorized - no token provided']);
+                    echo json_encode([
+                        'error' => 'Unauthorized - no token provided',
+                        'debug' => [
+                            'auth_header' => isset($headers['Authorization']) ? 'present' : 'missing',
+                            'session_token' => isset($_SESSION['token']) ? 'present' : 'missing',
+                            'query_token' => isset($_GET['token']) ? 'present' : 'missing'
+                        ]
+                    ]);
                     exit;
                 }
 
                 // Decode token to get user_id
+                // Support both new format (base64 JSON) and old format (plain hex)
+                $user_id = null;
+
                 try {
+                    // Try new format first (base64 encoded JSON)
                     $decoded = json_decode(base64_decode($token), true);
-                    if (!$decoded || !isset($decoded['user_id'])) {
-                        http_response_code(401);
-                        echo json_encode(['error' => 'Invalid token format']);
-                        exit;
+                    if ($decoded && isset($decoded['user_id'])) {
+                        $token_data = $decoded;
+                        $user_id = $token_data['user_id'];
+                    } else {
+                        // If new format doesn't work, try to find token in session
+                        // (for backward compatibility with old sessions)
+                        if (isset($_SESSION['token']) && $_SESSION['token'] === $token && isset($_SESSION['user_id'])) {
+                            $user_id = $_SESSION['user_id'];
+                        } else {
+                            http_response_code(401);
+                            echo json_encode(['error' => 'Invalid token format - please login again']);
+                            exit;
+                        }
                     }
-                    $token_data = $decoded;
-                    $user_id = $token_data['user_id'];
                 } catch (Exception $e) {
                     http_response_code(401);
-                    echo json_encode(['error' => 'Invalid token']);
+                    echo json_encode(['error' => 'Invalid token - ' . $e->getMessage()]);
+                    exit;
+                }
+
+                if (!$user_id) {
+                    http_response_code(401);
+                    echo json_encode(['error' => 'No user_id in token']);
                     exit;
                 }
 
