@@ -132,7 +132,7 @@ if (!$endpoint) {
     if (count($parts) > 0) {
         $first = $parts[0];
 
-        if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search' || $first === 'auth') {
+        if ($first === 'codes' || $first === 'articles' || $first === 'books' || $first === 'search' || $first === 'auth' || $first === 'me') {
             $endpoint = $first;
 
             // Extract slug if present
@@ -469,6 +469,66 @@ try {
                     http_response_code(400);
                     echo json_encode(['error' => 'Unknown auth action']);
                 }
+            } else {
+                http_response_code(405);
+                echo json_encode(['error' => 'Method not allowed']);
+            }
+            break;
+
+        // ────────────────────────────────────────────────────────────────
+        // GET CURRENT USER ENDPOINT
+        // ────────────────────────────────────────────────────────────────
+        case 'me':
+            if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+                // Check if user is logged in (via token or session)
+                $token = null;
+
+                // Try to get token from Authorization header
+                $headers = getallheaders();
+                if (isset($headers['Authorization'])) {
+                    $matches = [];
+                    if (preg_match('/Bearer\s+(\S+)/', $headers['Authorization'], $matches)) {
+                        $token = $matches[1];
+                    }
+                }
+
+                // Fall back to session token
+                if (!$token && isset($_SESSION['token'])) {
+                    $token = $_SESSION['token'];
+                }
+
+                // Fall back to query parameter
+                if (!$token && isset($_GET['token'])) {
+                    $token = $_GET['token'];
+                }
+
+                if (!$token || !isset($_SESSION['user_id'])) {
+                    http_response_code(401);
+                    echo json_encode(['error' => 'Unauthorized']);
+                    exit;
+                }
+
+                // Get user from session
+                $user_id = $_SESSION['user_id'];
+                $stmt = $pdo->prepare('SELECT id, full_name, email, role, status FROM users WHERE id = ? LIMIT 1');
+                $stmt->execute([$user_id]);
+                $user = $stmt->fetch();
+
+                if (!$user || $user['status'] !== 'active') {
+                    http_response_code(401);
+                    echo json_encode(['error' => 'User not found or inactive']);
+                    exit;
+                }
+
+                // Return user info
+                echo json_encode([
+                    'user' => [
+                        'id' => $user['id'],
+                        'full_name' => $user['full_name'],
+                        'email' => $user['email'],
+                        'role' => $user['role']
+                    ]
+                ]);
             } else {
                 http_response_code(405);
                 echo json_encode(['error' => 'Method not allowed']);
