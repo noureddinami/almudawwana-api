@@ -664,8 +664,28 @@ try {
 
             // Verify token and get user
             if (!$token) {
+                // Debug: Log what headers we received
+                $debug_headers = [];
+                if (function_exists('getallheaders')) {
+                    $debug_headers['getallheaders'] = array_keys(getallheaders());
+                }
+                if (isset($_SERVER['HTTP_AUTHORIZATION'])) {
+                    $debug_headers['HTTP_AUTHORIZATION'] = 'present';
+                }
+                if (isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+                    $debug_headers['REDIRECT_HTTP_AUTHORIZATION'] = 'present';
+                }
+
                 http_response_code(401);
-                echo json_encode(['error' => 'Unauthorized - no token']);
+                echo json_encode([
+                    'error' => 'Unauthorized - no token found',
+                    'debug' => [
+                        'headers_checked' => $debug_headers,
+                        'query_params' => $_GET,
+                        'request_method' => $_SERVER['REQUEST_METHOD'],
+                        'request_uri' => $_SERVER['REQUEST_URI']
+                    ]
+                ]);
                 exit;
             }
 
