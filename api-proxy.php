@@ -32,8 +32,15 @@ session_start();
 // CONFIGURATION
 // ============================================================================
 
+// Determine if running locally or on DreamHost
 $repo_dir = '/home/dh_modawana/almodawana.dreamhosters.com';
+$local_env_file = __DIR__ . '/.env';
 $env_file = $repo_dir . '/.env';
+
+// For local development, use .env in the same directory as this script
+if (file_exists($local_env_file)) {
+    $env_file = $local_env_file;
+}
 
 function load_env_file($file) {
     $vars = [];
@@ -54,10 +61,12 @@ function load_env_file($file) {
         $key = trim($key);
         $value = trim($value);
 
-        // Remove quotes
-        if (($value[0] === '"' && substr($value, -1) === '"') ||
-            ($value[0] === "'" && substr($value, -1) === "'")) {
-            $value = substr($value, 1, -1);
+        // Remove quotes if value is not empty
+        if (!empty($value) && strlen($value) > 1) {
+            if (($value[0] === '"' && substr($value, -1) === '"') ||
+                ($value[0] === "'" && substr($value, -1) === "'")) {
+                $value = substr($value, 1, -1);
+            }
         }
 
         $vars[$key] = $value;
@@ -599,32 +608,16 @@ try {
             break;
 
         // ────────────────────────────────────────────────────────────────
-        // ADMIN ENDPOINTS (Proxy to Laravel API)
+        // ADMIN ENDPOINTS (Direct Database Implementation)
         // ────────────────────────────────────────────────────────────────
         case 'admin':
-            // Proxy admin requests to the Laravel API
-            // We'll handle this by forwarding to the Laravel backend
-
-            // Build the target URL
-            $target_url = 'https://almodawana.dreamhosters.com/api/v1/admin' . ($slug ? '/' . $slug : '');
-
-            // Add query parameters if any (exclude endpoint and slug)
-            if (!empty($_GET)) {
-                $filtered_params = $_GET;
-                unset($filtered_params['endpoint']);
-                unset($filtered_params['slug']);
-                unset($filtered_params['sub']);
-                if (!empty($filtered_params)) {
-                    $target_url .= '?' . http_build_query($filtered_params);
-                }
-            }
-
-            // Get the token from Authorization header (case-insensitive)
+            // All admin endpoints require authentication
             $token = null;
+            $user_id = null;
             $headers = getallheaders();
+
             foreach ($headers as $name => $value) {
                 if (strtolower($name) === 'authorization') {
-                    $matches = [];
                     if (preg_match('/Bearer\s+(\S+)/i', $value, $matches)) {
                         $token = $matches[1];
                         break;
@@ -632,92 +625,318 @@ try {
                 }
             }
 
-            // Prepare headers for the request
+            // Verify token and get user
+            if (!$token) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Unauthorized - no token']);
+                exit;
+            }
+
+            try {
+                $decoded = json_decode(base64_decode($token), true);
+                if (!$decoded || !isset($decoded['user_id'])) {
+                    http_response_code(401);
+                    echo json_encode(['error' => 'Invalid token']);
+                    exit;
+                }
+                $user_id = $decoded['user_id'];
+            } catch (Exception $e) {
+                http_response_code(401);
+                echo json_encode(['error' => 'Invalid token format']);
+                exit;
+            }
+
+            // Verify user is admin
+            $stmt = $pdo->prepare('SELECT role FROM users WHERE id = ?');
+            $stmt->execute([$user_id]);
+            $user = $stmt->fetch();
+
+            if (!$user || !in_array($user['role'], ['admin', 'moderator'])) {
+                http_response_code(403);
+                echo json_encode(['error' => 'Forbidden - admin access required']);
+                exit;
+            }
+
+            // Route to specific admin endpoint
+            if ($slug === 'stats' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                // GET /admin/stats - Dashboard statistics
+                $stats = [
+                    'users' => [
+                        'total' => (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn(),
+                        'active' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE status = "active"')->fetchColumn(),
+                        'new_week' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)')->fetchColumn(),
+                        'new_month' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)')->fetchColumn(),
+                    ],
+                    'codes' => [
+                        'total' => (int) $pdo->query('SELECT COUNT(*) FROM codes')->fetchColumn(),
+                        'in_force' => (int) $pdo->query('SELECT COUNT(*) FROM codes WHERE status = "in_force"')->fetchColumn(),
+                    ],
+                    'articles' => [
+                        'total' => (int) $pdo->query('SELECT COUNT(*) FROM articles')->fetchColumn(),
+                        'in_force' => (int) $pdo->query('SELECT COUNT(*) FROM articles WHERE status = "in_force"')->fetchColumn(),
+                        'amended' => (int) $pdo->query('SELECT COUNT(*) FROM articles WHERE status = "amended"')->fetchColumn(),
+                        'abrogated' => (int) $pdo->query('SELECT COUNT(*) FROM articles WHERE status = "abrogated"')->fetchColumn(),
+                        'draft' => (int) $pdo->query('SELECT COUNT(*) FROM articles WHERE status = "draft"')->fetchColumn(),
+                        'total_views' => (int) $pdo->query('SELECT COALESCE(SUM(view_count), 0) FROM articles')->fetchColumn(),
+                    ],
+                    'comments' => [
+                        'total' => 0,
+                        'pending' => 0,
+                        'approved' => 0,
+                        'rejected' => 0,
+                    ],
+                    'notes' => [
+                        'total' => 0,
+                    ],
+                    'top_viewed' => [],
+                    'codes_breakdown' => [],
+                    'recent_users' => [],
+                    'pending_comments' => [],
+                    'activity_week' => [],
+                ];
+
+                // Try to load comments data if table exists
+                try {
+                    $stats['comments']['total'] = (int) $pdo->query('SELECT COUNT(*) FROM comments')->fetchColumn();
+                    $stats['comments']['pending'] = (int) $pdo->query('SELECT COUNT(*) FROM comments WHERE status = "pending"')->fetchColumn();
+                    $stats['comments']['approved'] = (int) $pdo->query('SELECT COUNT(*) FROM comments WHERE status = "approved"')->fetchColumn();
+                    $stats['comments']['rejected'] = (int) $pdo->query('SELECT COUNT(*) FROM comments WHERE status = "rejected"')->fetchColumn();
+                } catch (PDOException $e) {
+                    // Table doesn't exist, keep default zeros
+                }
+
+                // Try to load notes data if table exists
+                try {
+                    $stats['notes']['total'] = (int) $pdo->query('SELECT COUNT(*) FROM notes')->fetchColumn();
+                } catch (PDOException $e) {
+                    // Table doesn't exist, keep default zero
+                }
+
+                echo json_encode($stats);
+
+            } elseif ($slug === 'users' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                // GET /admin/users - List users with pagination
+                $page = (int) ($_GET['page'] ?? 1);
+                $per_page = (int) ($_GET['per_page'] ?? 15);
+                $offset = ($page - 1) * $per_page;
+
+                $total = (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+                $stmt = $pdo->prepare('SELECT id, full_name, email, role, status, created_at FROM users LIMIT ? OFFSET ?');
+                $stmt->bindValue(1, $per_page, PDO::PARAM_INT);
+                $stmt->bindValue(2, $offset, PDO::PARAM_INT);
+                $stmt->execute();
+                $users = $stmt->fetchAll();
+
+                echo json_encode([
+                    'data' => $users,
+                    'current_page' => $page,
+                    'per_page' => $per_page,
+                    'total' => $total,
+                    'last_page' => ceil($total / $per_page),
+                ]);
+
+            } elseif ($slug && !strpos($slug, '/') && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                // GET /admin/{slug} - Get specific resource
+                if ($slug === 'codes') {
+                    $page = (int) ($_GET['page'] ?? 1);
+                    $per_page = (int) ($_GET['per_page'] ?? 15);
+                    $offset = ($page - 1) * $per_page;
+
+                    $total = (int) $pdo->query('SELECT COUNT(*) FROM codes')->fetchColumn();
+                    $stmt = $pdo->prepare('SELECT id, title_ar, title_fr, slug, type, status, official_number, promulgation_date, total_articles, created_at FROM codes LIMIT ? OFFSET ?');
+                    $stmt->bindValue(1, $per_page, PDO::PARAM_INT);
+                    $stmt->bindValue(2, $offset, PDO::PARAM_INT);
+                    $stmt->execute();
+                    $codes = $stmt->fetchAll();
+
+                    echo json_encode([
+                        'data' => $codes,
+                        'current_page' => $page,
+                        'per_page' => $per_page,
+                        'total' => $total,
+                        'last_page' => ceil($total / $per_page),
+                    ]);
+
+                } elseif ($slug === 'articles' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                    // GET /admin/articles - List articles
+                    $page = (int) ($_GET['page'] ?? 1);
+                    $per_page = (int) ($_GET['per_page'] ?? 15);
+                    $offset = ($page - 1) * $per_page;
+
+                    $total = (int) $pdo->query('SELECT COUNT(*) FROM articles')->fetchColumn();
+                    $stmt = $pdo->prepare('SELECT id, code_id, number, number_int, slug, status, view_count, comment_count, created_at FROM articles LIMIT ? OFFSET ?');
+                    $stmt->bindValue(1, $per_page, PDO::PARAM_INT);
+                    $stmt->bindValue(2, $offset, PDO::PARAM_INT);
+                    $stmt->execute();
+                    $articles = $stmt->fetchAll();
+
+                    echo json_encode([
+                        'data' => $articles,
+                        'current_page' => $page,
+                        'per_page' => $per_page,
+                        'total' => $total,
+                        'last_page' => ceil($total / $per_page),
+                    ]);
+
+                } elseif ($slug === 'comments' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                    // GET /admin/comments - List comments
+                    $page = (int) ($_GET['page'] ?? 1);
+                    $per_page = (int) ($_GET['per_page'] ?? 15);
+                    $offset = ($page - 1) * $per_page;
+
+                    try {
+                        $total = (int) $pdo->query('SELECT COUNT(*) FROM comments')->fetchColumn();
+                        $stmt = $pdo->prepare('SELECT id, article_id, author_id, content_ar, type, status, rejection_reason, upvotes, created_at FROM comments LIMIT ? OFFSET ?');
+                        $stmt->bindValue(1, $per_page, PDO::PARAM_INT);
+                        $stmt->bindValue(2, $offset, PDO::PARAM_INT);
+                        $stmt->execute();
+                        $comments = $stmt->fetchAll();
+
+                        echo json_encode([
+                            'data' => $comments,
+                            'current_page' => $page,
+                            'per_page' => $per_page,
+                            'total' => $total,
+                            'last_page' => ceil($total / $per_page),
+                        ]);
+                    } catch (PDOException $e) {
+                        // Table doesn't exist, return empty list
+                        echo json_encode([
+                            'data' => [],
+                            'current_page' => $page,
+                            'per_page' => $per_page,
+                            'total' => 0,
+                            'last_page' => 1,
+                        ]);
+                    }
+
+                } elseif ($slug === 'pdfs' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                    // GET /admin/pdfs - List PDFs
+                    $page = (int) ($_GET['page'] ?? 1);
+                    $per_page = (int) ($_GET['per_page'] ?? 15);
+                    $offset = ($page - 1) * $per_page;
+
+                    try {
+                        $total = (int) $pdo->query('SELECT COUNT(*) FROM pdfs')->fetchColumn();
+                        $stmt = $pdo->prepare('SELECT id, code_id, title_ar, title_fr, original_filename, stored_filename, file_size, document_type, status, articles_extracted, extraction_log, source_url, is_public, created_at FROM pdfs LIMIT ? OFFSET ?');
+                        $stmt->bindValue(1, $per_page, PDO::PARAM_INT);
+                        $stmt->bindValue(2, $offset, PDO::PARAM_INT);
+                        $stmt->execute();
+                        $pdfs = $stmt->fetchAll();
+
+                        echo json_encode([
+                            'data' => $pdfs,
+                            'current_page' => $page,
+                            'per_page' => $per_page,
+                            'total' => $total,
+                            'last_page' => ceil($total / $per_page),
+                        ]);
+                    } catch (PDOException $e) {
+                        // Table doesn't exist, return empty list
+                        echo json_encode([
+                            'data' => [],
+                            'current_page' => $page,
+                            'per_page' => $per_page,
+                            'total' => 0,
+                            'last_page' => 1,
+                        ]);
+                    }
+
+                } elseif ($slug === 'code-types' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                    // GET /admin/code-types - List code types
+                    try {
+                        $stmt = $pdo->query('SELECT id, slug, name_ar, name_fr, color, sort_order FROM code_types ORDER BY sort_order ASC');
+                        $code_types = $stmt->fetchAll();
+                        echo json_encode($code_types);
+                    } catch (PDOException $e) {
+                        // Table doesn't exist, return empty array
+                        echo json_encode([]);
+                    }
+
+                } elseif ($slug === 'articles' && $sub_resource === 'stats' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                    // GET /admin/articles/stats
+                    $stats = [
+                        'total' => (int) $pdo->query('SELECT COUNT(*) FROM articles')->fetchColumn(),
+                        'in_force' => (int) $pdo->query('SELECT COUNT(*) FROM articles WHERE status = "in_force"')->fetchColumn(),
+                        'abrogated' => (int) $pdo->query('SELECT COUNT(*) FROM articles WHERE status = "abrogated"')->fetchColumn(),
+                        'amended' => (int) $pdo->query('SELECT COUNT(*) FROM articles WHERE status = "amended"')->fetchColumn(),
+                        'by_code' => [],
+                    ];
+
+                    echo json_encode($stats);
+
+                } elseif ($slug === 'users' && $sub_resource === 'stats' && $_SERVER['REQUEST_METHOD'] === 'GET') {
+                    // GET /admin/users/stats
+                    $stats = [
+                        'total' => (int) $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn(),
+                        'active' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE status = "active"')->fetchColumn(),
+                        'suspended' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE status = "suspended"')->fetchColumn(),
+                        'by_role' => [
+                            'admin' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE role = "admin"')->fetchColumn(),
+                            'moderator' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE role = "moderator"')->fetchColumn(),
+                            'user' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE role = "user"')->fetchColumn(),
+                        ],
+                        'new_today' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE DATE(created_at) = CURDATE()')->fetchColumn(),
+                        'new_week' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)')->fetchColumn(),
+                    ];
+
+                    echo json_encode($stats);
+
+                } else {
+                    http_response_code(404);
+                    echo json_encode(['error' => 'Admin endpoint not found', 'slug' => $slug, 'sub_resource' => $sub_resource, 'method' => $_SERVER['REQUEST_METHOD']]);
+                }
+            }
+            break;
+
+        // ────────────────────────────────────────────────────────────────
+        // DEBUG ENDPOINT - Test Admin API Connectivity
+        // ────────────────────────────────────────────────────────────────
+        case 'test-admin':
+            // Simple endpoint to test if we can reach the Laravel API
+            $target_url = 'http://almodawana.dreamhosters.com/api/v1/admin/stats';
+
+            // Try with a test token
+            $test_token = isset($_GET['token']) ? $_GET['token'] : null;
+
             $request_headers = [
                 'Content-Type: application/json',
                 'Accept: application/json',
             ];
-            if ($token) {
-                $request_headers[] = "Authorization: Bearer {$token}";
+            if ($test_token) {
+                $request_headers[] = "Authorization: Bearer {$test_token}";
             }
 
-            // Check if curl is available
-            if (!function_exists('curl_init')) {
-                http_response_code(502);
-                echo json_encode(['error' => 'curl extension not available on this server']);
-                exit;
-            }
-
-            // Forward the request to Laravel API
             $ch = curl_init();
             curl_setopt($ch, CURLOPT_URL, $target_url);
             curl_setopt($ch, CURLOPT_HTTPHEADER, $request_headers);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true); // Follow redirects
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // For testing only
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-            curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+            curl_setopt($ch, CURLOPT_VERBOSE, true); // Enable verbose mode for debugging
 
-            // Set request method and body
-            $body = file_get_contents('php://input');
-
-            if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-                curl_setopt($ch, CURLOPT_POST, true);
-                if ($body) {
-                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-                }
-            } elseif ($_SERVER['REQUEST_METHOD'] === 'PUT') {
-                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-                if ($body) {
-                    curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
-                }
-            } elseif ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
-                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
-            } else {
-                // GET or other methods
-                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $_SERVER['REQUEST_METHOD']);
-            }
-
-            // Execute request
             $response = curl_exec($ch);
             $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $curl_error = curl_error($ch);
+            $curl_info = curl_getinfo($ch);
             curl_close($ch);
 
-            if ($curl_error) {
-                http_response_code(502);
-                echo json_encode([
-                    'error' => 'Gateway error: ' . $curl_error,
-                    'debug' => [
-                        'target_url' => $target_url,
-                        'method' => $_SERVER['REQUEST_METHOD']
-                    ]
-                ]);
-                exit;
-            }
-
-            // Debug: Check if response is valid JSON
-            if (!empty($response)) {
-                $decoded = json_decode($response, true);
-                if (json_last_error() !== JSON_ERROR_NONE) {
-                    // Response is not JSON - might be HTML error from Laravel
-                    http_response_code(502);
-                    echo json_encode([
-                        'error' => 'Invalid response from Laravel API',
-                        'http_code' => $http_code,
-                        'response_preview' => substr($response, 0, 200),
-                        'debug' => [
-                            'target_url' => $target_url,
-                            'method' => $_SERVER['REQUEST_METHOD']
-                        ]
-                    ]);
-                    exit;
-                }
-            }
-
-            // Return the response
-            http_response_code($http_code);
-            echo $response;
+            echo json_encode([
+                'test' => 'Admin API connectivity',
+                'target_url' => $target_url,
+                'http_code' => $http_code,
+                'curl_error' => $curl_error,
+                'response_received' => !empty($response),
+                'response_length' => strlen($response ?? ''),
+                'response_preview' => substr($response ?? '', 0, 200),
+                'curl_info' => [
+                    'connect_time' => $curl_info['connect_time'] ?? null,
+                    'total_time' => $curl_info['total_time'] ?? null,
+                    'http_code' => $curl_info['http_code'] ?? null,
+                    'request_size' => $curl_info['request_size'] ?? null,
+                ],
+                'has_token' => !!$test_token,
+            ]);
             break;
 
         // ────────────────────────────────────────────────────────────────
@@ -728,7 +947,7 @@ try {
             echo json_encode([
                 'error' => 'Unknown endpoint',
                 'endpoint' => $endpoint,
-                'available' => ['codes', 'articles', 'books', 'search', 'auth', 'me', 'admin']
+                'available' => ['codes', 'articles', 'books', 'search', 'auth', 'me', 'admin', 'test-admin']
             ]);
     }
 
